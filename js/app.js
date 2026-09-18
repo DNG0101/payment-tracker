@@ -3,14 +3,19 @@
 
   var MAX_QR_AMOUNT_PAISE = 199900;
   var DEBOUNCE_MS = 190;
+  var CAMERA_SCAN_INTERVAL_MS = 170;
   var state = {
     business: null,
+    pendingBusinessUri: "",
     totalPaise: 0,
     alreadyPaidPaise: 0,
     remainingPaise: 0,
     qrPayments: [],
     amountTimer: null,
-    pendingBusinessUri: ""
+    scannerStream: null,
+    scannerTimer: null,
+    scannerPurpose: "generic",
+    scannerLastValue: ""
   };
   var el = {};
 
@@ -21,6 +26,7 @@
     return "₹" + value;
   }
   function moneyPlain(paise) { return (paise / 100).toFixed(2); }
+
   function parseMoney(value) {
     var text = String(value == null ? "" : value).trim().replace(/,/g, "");
     if (text === "") return 0;
@@ -32,16 +38,19 @@
     var paise = whole * 100 + Number(decimals);
     return Number.isSafeInteger(paise) ? paise : null;
   }
+
   function setError(node, text) {
     node.textContent = text || "";
     node.hidden = !text;
   }
+
   function showToast(text) {
     el.toast.textContent = text;
     el.toast.hidden = false;
     window.clearTimeout(showToast.timer);
     showToast.timer = window.setTimeout(function () { el.toast.hidden = true; }, 3300);
   }
+
   function setSetupMessage(text, info) {
     el.setupMessage.textContent = text || "";
     el.setupMessage.classList.toggle("info", Boolean(info));
@@ -58,23 +67,41 @@
     if (left > 0) parts.push(left);
     return parts;
   }
+
   function sumAmounts(payments) {
     return payments.reduce(function (total, item) { return total + item.amountPaise; }, 0);
   }
-  function validateSplit() {
-    if (state.remainingPaise === 0) return state.qrPayments.length === 0;
-    return state.qrPayments.length > 0 &&
-      sumAmounts(state.qrPayments) === state.remainingPaise &&
-      state.qrPayments.every(function (item) {
+
+  function paidQrTotal() {
+    return state.qrPayments.reduce(function (total, item) {
+      return total + (item.paid ? item.amountPaise : 0);
+    }, 0);
+  }
+
+  function validateSplit(payments) {
+    var list = payments || state.qrPayments;
+    if (state.remainingPaise === 0) return list.length === 0;
+    return list.length > 0 &&
+      sumAmounts(list) === state.remainingPaise &&
+      list.every(function (item) {
         return Number.isSafeInteger(item.amountPaise) && item.amountPaise > 0 && item.amountPaise <= MAX_QR_AMOUNT_PAISE;
       });
   }
-  function paymentsFromAmounts(amounts) {
-    return amounts.map(function (amount) {
-      return { id: "payment-" + Math.random().toString(36).slice(2), amountPaise: amount, paid: false };
-    });
+
+  function newPayment(amountPaise) {
+    return {
+      id: "payment-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+      amountPaise: amountPaise,
+      paid: false
+    };
   }
+
+  function paymentsFromAmounts(amounts) {
+    return amounts.map(newPayment);
+  }
+
   function resetTransaction() {
+    window.clearTimeout(state.amountTimer);
     state.totalPaise = 0;
     state.alreadyPaidPaise = 0;
     state.remainingPaise = 0;
@@ -87,49 +114,7 @@
     el.transactionContent.hidden = true;
     el.noPayment.hidden = false;
   }
-  function updateAmountSummary() {
-    if (state.totalPaise <= 0 || state.alreadyPaidPaise < 0 || state.alreadyPaidPaise > state.totalPaise) {
-      el.amountSummary.hidden = true;
-      return;
-    }
-    el.amountSummary.hidden = false;
-    if (state.remainingPaise === 0) {
-      el.amountSummary.innerHTML = "Total " + money(state.totalPaise) + " &minus; already paid " + money(state.alreadyPaidPaise) + " = <strong>No remaining payment required.</strong>";
-    } else {
-      el.amountSummary.innerHTML = "Total " + money(state.totalPaise) + " &minus; already paid " + money(state.alreadyPaidPaise) + " = <strong>" + money(state.remainingPaise) + " remaining</strong>";
-    }
-  }
-  function applyAmounts(amounts) {
-    state.qrPayments = paymentsFromAmounts(amounts);
-    renderTransaction();
-  }
-  function generateForInputs() {
-    var total = parseMoney(el.totalAmount.value);
-    var paid = parseMoney(el.alreadyPaid.value);
-    var totalError = total === null || total <= 0 ? "Enter a total amount greater than ₹0." : "";
-    setError(el.totalError, totalError);
-    if (totalError) {
-      resetGeneratedOnly();
-      return;
-    }
-    var paidError = paid === null ? "Enter a valid amount with up to 2 decimal places." : paid > total ? "Already paid amount cannot be greater than the total amount." : "";
-    setError(el.paidError, paidError);
-    if (paidError) {
-      resetGeneratedOnly();
-      return;
-    }
-    state.totalPaise = total;
-    state.alreadyPaidPaise = paid;
-    state.remainingPaise = total - paid;
-    updateAmountSummary();
-    if (state.remainingPaise === 0) {
-      state.qrPayments = [];
-      el.transactionContent.hidden = true;
-      el.noPayment.hidden = false;
-      return;
-    }
-    applyAmounts(splitAmount(state.remainingPaise));
-  }
+
   function resetGeneratedOnly() {
     state.totalPaise = 0;
     state.alreadyPaidPaise = 0;
@@ -139,6 +124,58 @@
     el.noPayment.hidden = false;
     el.amountSummary.hidden = true;
   }
+
+  function updateAmountSummary() {
+    if (state.totalPaise <= 0 || state.alreadyPaidPaise < 0 || state.alreadyPaidPaise > state.totalPaise) {
+      el.amountSummary.hidden = true;
+      return;
+    }
+    el.amountSummary.hidden = false;
+    el.amountSummary.textContent = "";
+    var line = document.createElement("div");
+    line.className = "summary-equation";
+    line.textContent = money(state.totalPaise) + " − " + money(state.alreadyPaidPaise) + " = " + money(state.remainingPaise) + " remaining";
+    el.amountSummary.appendChild(line);
+    if (state.remainingPaise === 0) {
+      var done = document.createElement("strong");
+      done.textContent = "No remaining payment required.";
+      el.amountSummary.appendChild(done);
+    }
+  }
+
+  function generateForInputs() {
+    var total = parseMoney(el.totalAmount.value);
+    var paid = parseMoney(el.alreadyPaid.value);
+    var totalError = total === null || total <= 0 ? "Enter a total amount greater than ₹0." : "";
+    setError(el.totalError, totalError);
+    if (totalError) {
+      resetGeneratedOnly();
+      return;
+    }
+
+    var paidError = paid === null ? "Enter a valid amount with up to 2 decimal places." : paid > total ? "Already paid amount cannot be greater than the total amount." : "";
+    setError(el.paidError, paidError);
+    if (paidError) {
+      resetGeneratedOnly();
+      return;
+    }
+
+    state.totalPaise = total;
+    state.alreadyPaidPaise = paid;
+    state.remainingPaise = total - paid;
+    updateAmountSummary();
+
+    if (state.remainingPaise === 0) {
+      state.qrPayments = [];
+      el.transactionContent.hidden = true;
+      el.noPayment.hidden = false;
+      return;
+    }
+
+    state.qrPayments = paymentsFromAmounts(splitAmount(state.remainingPaise));
+    renderTransaction();
+  }
+
   function debounceGenerate() {
     window.clearTimeout(state.amountTimer);
     state.amountTimer = window.setTimeout(generateForInputs, DEBOUNCE_MS);
@@ -151,6 +188,7 @@
       el.noPayment.hidden = false;
       return;
     }
+
     el.transactionContent.hidden = false;
     el.noPayment.hidden = true;
     updateAmountSummary();
@@ -160,11 +198,12 @@
     renderCards();
     renderMath();
   }
+
   function renderProgress() {
-    var qrPaid = state.qrPayments.reduce(function (total, item) { return total + (item.paid ? item.amountPaise : 0); }, 0);
+    var qrPaid = paidQrTotal();
     var pending = state.remainingPaise - qrPaid;
     var complete = pending === 0;
-    el.progressContent.innerHTML = "";
+    el.progressContent.textContent = "";
     addStat(el.progressContent, "Total Bill", money(state.totalPaise));
     addStat(el.progressContent, "Already Paid", money(state.alreadyPaidPaise));
     addStat(el.progressContent, "QR Payments Paid", money(qrPaid));
@@ -176,14 +215,17 @@
       el.progressContent.appendChild(banner);
     }
   }
+
   function renderAccounting() {
-    var qrPaid = state.qrPayments.reduce(function (total, item) { return total + (item.paid ? item.amountPaise : 0); }, 0);
+    var qrPaid = paidQrTotal();
     var accounted = state.alreadyPaidPaise + qrPaid;
-    el.accountingContent.innerHTML = "";
+    var unpaid = state.remainingPaise - qrPaid;
+    el.accountingContent.textContent = "";
     addStat(el.accountingContent, "Total to collect", money(state.totalPaise));
     addStat(el.accountingContent, "Accounted so far", money(accounted));
-    addStat(el.accountingContent, "Unpaid QR amount", money(state.remainingPaise - qrPaid), (state.remainingPaise - qrPaid) ? "pending" : "complete");
+    addStat(el.accountingContent, "Unpaid QR amount", money(unpaid), unpaid ? "pending" : "complete");
   }
+
   function addStat(parent, label, value, extraClass) {
     var row = document.createElement("div");
     row.className = "stat-row";
@@ -196,11 +238,13 @@
     row.append(labelNode, valueNode);
     parent.appendChild(row);
   }
+
   function renderCards() {
-    el.qrList.innerHTML = "";
+    el.qrList.textContent = "";
     state.qrPayments.forEach(function (payment, index) {
       var card = document.createElement("article");
       card.className = "qr-card" + (payment.paid ? " paid" : "");
+
       var header = document.createElement("div");
       header.className = "qr-card-header";
       var title = document.createElement("h3");
@@ -212,6 +256,7 @@
         paidLabel.textContent = "✓ PAID";
         header.appendChild(paidLabel);
       }
+
       var row = document.createElement("div");
       row.className = "qr-amount-row";
       var amountWrap = document.createElement("div");
@@ -227,6 +272,7 @@
       amountInput.setAttribute("aria-label", "Amount for payment " + (index + 1));
       amountWrap.append(rupee, amountInput);
       row.appendChild(amountWrap);
+
       if (!payment.paid) {
         var apply = document.createElement("button");
         apply.className = "button button-primary apply-button";
@@ -240,6 +286,7 @@
         });
         row.appendChild(apply);
       }
+
       var frame = document.createElement("div");
       frame.className = "qr-frame";
       var image = document.createElement("img");
@@ -248,18 +295,26 @@
         image.src = QRTools.qrImageDataUri(QRTools.buildPaymentUri(state.business.upiBaseUri, payment.amountPaise));
       } catch (error) {
         image.alt = "Payment QR unavailable";
+        frame.classList.add("qr-error");
+        var errorText = document.createElement("span");
+        errorText.textContent = "Unable to generate QR";
+        frame.appendChild(errorText);
       }
-      frame.appendChild(image);
+      if (image.src) frame.appendChild(image);
+
       var payLabel = document.createElement("p");
       payLabel.className = "pay-label";
       payLabel.textContent = "Pay " + money(payment.amountPaise);
+
       card.append(header, row, frame, payLabel);
+
       if (payment.paid) {
         var lock = document.createElement("div");
         lock.className = "paid-lock";
         lock.textContent = "🔒 Paid amount locked";
         card.appendChild(lock);
       }
+
       var paidButton = document.createElement("button");
       paidButton.className = "button " + (payment.paid ? "button-ghost" : "button-primary") + " paid-button";
       paidButton.type = "button";
@@ -273,21 +328,37 @@
       el.qrList.appendChild(card);
     });
   }
+
   function renderMath() {
-    var lines = document.createElement("div");
-    lines.className = "math-lines";
+    el.mathBreakdown.textContent = "";
+
+    if (state.alreadyPaidPaise > 0) {
+      var subtraction = document.createElement("div");
+      subtraction.className = "math-block";
+      appendMathLine(subtraction, "  " + money(state.totalPaise));
+      appendMathLine(subtraction, "- " + money(state.alreadyPaidPaise));
+      appendMathLine(subtraction, "  " + money(state.remainingPaise), true);
+      var subtractionLabel = document.createElement("p");
+      subtractionLabel.className = "math-caption";
+      subtractionLabel.textContent = "Remaining amount";
+      var wrap = document.createElement("div");
+      wrap.append(subtractionLabel, subtraction);
+      el.mathBreakdown.appendChild(wrap);
+    }
+
+    var additionWrap = document.createElement("div");
+    var additionLabel = document.createElement("p");
+    additionLabel.className = "math-caption";
+    additionLabel.textContent = "QR amount addition";
+    var addition = document.createElement("div");
+    addition.className = "math-block";
     state.qrPayments.forEach(function (payment, index) {
-      var line = document.createElement("div");
-      line.className = "math-line";
-      line.textContent = (index === state.qrPayments.length - 1 ? "+ " : "  ") + money(payment.amountPaise);
-      lines.appendChild(line);
+      appendMathLine(addition, (index === state.qrPayments.length - 1 ? "+ " : "  ") + money(payment.amountPaise));
     });
-    var totalLine = document.createElement("div");
-    totalLine.className = "math-line total";
-    totalLine.textContent = "  " + money(state.remainingPaise) + "  ✓";
-    lines.appendChild(totalLine);
-    el.mathBreakdown.innerHTML = "";
-    el.mathBreakdown.appendChild(lines);
+    appendMathLine(addition, "  " + money(state.remainingPaise) + "  ✓", true);
+    additionWrap.append(additionLabel, addition);
+    el.mathBreakdown.appendChild(additionWrap);
+
     var note = document.createElement("p");
     note.className = "math-note";
     note.textContent = "QR Total = Remaining Amount ✓ (" + money(sumAmounts(state.qrPayments)) + " = " + money(state.remainingPaise) + ")";
@@ -295,10 +366,18 @@
     el.mathCheck.textContent = "✓ Totals match";
   }
 
+  function appendMathLine(parent, text, total) {
+    var line = document.createElement("div");
+    line.className = "math-line" + (total ? " total" : "");
+    line.textContent = text;
+    parent.appendChild(line);
+  }
+
   function editPayment(index, rawAmount) {
     var requested = parseMoney(rawAmount);
     var selected = state.qrPayments[index];
     if (!selected || selected.paid) return;
+
     if (requested === null || requested <= 0) {
       showToast("Enter a valid amount greater than ₹0.");
       renderTransaction();
@@ -309,50 +388,62 @@
       renderTransaction();
       return;
     }
+
     var difference = requested - selected.amountPaise;
     if (difference === 0) return;
+
     var next = state.qrPayments.map(function (item) {
       return { id: item.id, amountPaise: item.amountPaise, paid: item.paid };
     });
     next[index].amountPaise = requested;
 
     if (difference < 0) {
-      var add = -difference;
-      for (var i = next.length - 1; i >= 0 && add > 0; i -= 1) {
+      var freed = -difference;
+      for (var i = next.length - 1; i >= 0 && freed > 0; i -= 1) {
         if (i === index || next[i].paid) continue;
         var capacity = MAX_QR_AMOUNT_PAISE - next[i].amountPaise;
-        var moved = Math.min(capacity, add);
+        if (capacity <= 0) continue;
+        var moved = Math.min(capacity, freed);
         next[i].amountPaise += moved;
-        add -= moved;
+        freed -= moved;
       }
-      while (add > 0) {
-        var chunk = Math.min(MAX_QR_AMOUNT_PAISE, add);
-        next.push({ id: "payment-" + Math.random().toString(36).slice(2), amountPaise: chunk, paid: false });
-        add -= chunk;
+      while (freed > 0) {
+        var chunk = Math.min(MAX_QR_AMOUNT_PAISE, freed);
+        next.push(newPayment(chunk));
+        freed -= chunk;
       }
     } else {
-      var take = difference;
-      for (var j = next.length - 1; j >= 0 && take > 0; j -= 1) {
+      var needed = difference;
+      for (var j = next.length - 1; j >= 0 && needed > 0; j -= 1) {
         if (j === index || next[j].paid) continue;
-        var available = next[j].amountPaise;
-        var removed = Math.min(available, take);
+        var removed = Math.min(next[j].amountPaise, needed);
         next[j].amountPaise -= removed;
-        take -= removed;
+        needed -= removed;
       }
-      if (take > 0) {
-        showToast("That increase would require changing a paid QR. Edit a smaller amount.");
+      if (needed > 0) {
+        showToast("That increase would require changing a paid QR. Choose a smaller amount.");
         renderTransaction();
         return;
       }
-      next = next.filter(function (item) { return item.amountPaise > 0 || item.paid; });
+      next = next.filter(function (item) { return item.paid || item.amountPaise > 0; });
     }
-    if (next.some(function (item) { return item.amountPaise <= 0 || item.amountPaise > MAX_QR_AMOUNT_PAISE; }) || sumAmounts(next) !== state.remainingPaise) {
-      showToast("This edit cannot preserve the payment total.");
+
+    if (!validateCandidate(next)) {
+      showToast("Unable to redistribute that amount safely.");
       renderTransaction();
       return;
     }
+
     state.qrPayments = next;
     renderTransaction();
+  }
+
+  function validateCandidate(list) {
+    return list.length > 0 &&
+      sumAmounts(list) === state.remainingPaise &&
+      list.every(function (item) {
+        return Number.isSafeInteger(item.amountPaise) && item.amountPaise > 0 && item.amountPaise <= MAX_QR_AMOUNT_PAISE;
+      });
   }
 
   async function handleQrFile(file) {
@@ -361,75 +452,273 @@
       setSetupMessage("Please choose a PNG, JPG, JPEG or WebP image.");
       return;
     }
-    setSetupMessage("Reading your QR locally…", true);
+
+    setSetupMessage("Reading QR…", true);
     try {
-      var raw = await QRTools.decodeQrImage(file);
-      var parsed = QRTools.parseUpiUri(raw);
-      if (!parsed) throw new Error("This QR does not appear to contain a valid UPI payment address. Please upload a UPI payment QR.");
-      state.pendingBusinessUri = parsed.toString();
-      el.decodedUpi.textContent = parsed.searchParams.get("pa") + " · UPI payment address found";
-      el.businessForm.hidden = false;
-      setSetupMessage("");
-      el.businessName.focus();
+      var decoded = await QRTools.decodeQrImage(file);
+      acceptBusinessQr(decoded, "image");
     } catch (error) {
-      el.businessForm.hidden = true;
-      setSetupMessage(error && error.message ? error.message : "Unable to read this image. Please try a clearer QR image.");
+      setSetupMessage(error && error.message ? error.message : "Unable to read this QR image.");
+    } finally {
+      el.qrFileInput.value = "";
     }
   }
-  function showSetup() {
-    el.setupView.hidden = false;
-    el.dashboardView.hidden = true;
-    el.merchantDetails.hidden = true;
-    el.businessForm.hidden = true;
-    el.qrFileInput.value = "";
-    setSetupMessage("");
+
+  function acceptBusinessQr(rawValue, source) {
+    var parsed = QRTools.parseUpiUri(rawValue);
+    if (!parsed) {
+      setSetupMessage("QR scanned successfully, but it is not a valid UPI payment QR. Use 'Scan Any QR' if you only want to read its content.");
+      return false;
+    }
+    state.pendingBusinessUri = rawValue.trim();
+    el.decodedUpi.textContent = maskUpiUri(state.pendingBusinessUri);
+    el.businessForm.hidden = false;
+    setSetupMessage(source === "camera" ? "UPI QR scanned successfully." : "UPI QR image decoded successfully.", true);
+    var pn = parsed.searchParams.get("pn");
+    if (!el.businessName.value.trim() && pn) el.businessName.value = pn;
+    el.businessName.focus();
+    return true;
   }
+
+  function maskUpiUri(uri) {
+    var parsed = QRTools.parseUpiUri(uri);
+    if (!parsed) return uri;
+    var pa = parsed.searchParams.get("pa") || "";
+    var at = pa.indexOf("@");
+    if (at > 3) {
+      var left = pa.slice(0, at);
+      pa = left.slice(0, 2) + "••••" + left.slice(-2) + pa.slice(at);
+    }
+    return "upi://pay?pa=" + pa + (parsed.searchParams.get("pn") ? "&pn=" + parsed.searchParams.get("pn") : "");
+  }
+
+  function saveBusiness() {
+    var name = el.businessName.value.trim();
+    if (!state.pendingBusinessUri || !QRTools.parseUpiUri(state.pendingBusinessUri)) {
+      setSetupMessage("Upload or scan a valid UPI business QR first.");
+      return;
+    }
+    if (!name) {
+      setSetupMessage("Enter the business name.");
+      el.businessName.focus();
+      return;
+    }
+
+    try {
+      state.business = BusinessStorage.save(name, state.pendingBusinessUri);
+      state.pendingBusinessUri = "";
+      showDashboard();
+      showToast("Business saved on this device.");
+    } catch (error) {
+      setSetupMessage("Unable to save business details in this browser.");
+    }
+  }
+
+  function showSetup() {
+    resetTransaction();
+    stopScanner();
+    state.business = null;
+    state.pendingBusinessUri = "";
+    el.dashboardView.hidden = true;
+    el.setupView.hidden = false;
+    el.businessForm.hidden = true;
+    el.businessName.value = "";
+    el.decodedUpi.textContent = "";
+    el.merchantDetails.hidden = true;
+    setSetupMessage("", false);
+  }
+
   function showDashboard() {
     el.setupView.hidden = true;
     el.dashboardView.hidden = false;
     el.merchantName.textContent = state.business.businessName;
     el.merchantDetails.hidden = false;
     resetTransaction();
+    window.setTimeout(function () { el.totalAmount.focus(); }, 0);
   }
-  function saveBusiness() {
-    var name = el.businessName.value.trim();
-    if (!name) {
-      showToast("Enter a business name to continue.");
-      el.businessName.focus();
-      return;
-    }
-    state.business = BusinessStorage.save(name, state.pendingBusinessUri);
-    showDashboard();
-  }
-  function changeBusiness() {
-    if (!window.confirm("Change the saved business QR? The current transaction will be cleared.")) return;
+
+  function requestChangeBusiness() {
+    if (!window.confirm("Change the saved business QR? This removes the current saved business setup from this browser.")) return;
     BusinessStorage.clear();
-    state.business = null;
-    resetTransaction();
     showSetup();
   }
-  function merchantDetails() {
+
+  function showMerchantDetails() {
     if (!state.business) return;
     var parsed = QRTools.parseUpiUri(state.business.upiBaseUri);
     var pa = parsed ? parsed.searchParams.get("pa") : "";
     var masked = pa;
-    if (pa && pa.indexOf("@") > 1) masked = pa.slice(0, Math.min(2, pa.indexOf("@"))) + "******" + pa.slice(pa.indexOf("@"));
-    showToast(state.business.businessName + " · " + masked);
-  }
-  function finishPayment() {
-    var unpaid = state.qrPayments.some(function (payment) { return !payment.paid; });
-    if (unpaid) {
-      el.confirmDialog.hidden = false;
-      el.dialogConfirm.focus();
-    } else {
-      resetTransaction();
-      showToast("Payment session completed. Ready for the next customer.");
+    if (pa) {
+      var at = pa.indexOf("@");
+      if (at > 4) masked = pa.slice(0, 2) + "••••" + pa.slice(at - 2);
     }
+    window.alert("Business: " + state.business.businessName + "\nUPI: " + (masked || "Unavailable"));
   }
-  function finishConfirmed() {
+
+  function completePayment() {
+    if (!state.qrPayments.length) {
+      resetTransaction();
+      return;
+    }
+    var hasUnpaid = state.qrPayments.some(function (item) { return !item.paid; });
+    if (hasUnpaid) {
+      el.confirmDialog.hidden = false;
+      return;
+    }
+    finishPaymentSession();
+  }
+
+  function finishPaymentSession() {
     el.confirmDialog.hidden = true;
     resetTransaction();
     showToast("Payment session completed. Ready for the next customer.");
+  }
+
+  async function openScanner(purpose) {
+    stopScanner();
+    state.scannerPurpose = purpose || "generic";
+    state.scannerLastValue = "";
+    el.scannerResult.hidden = true;
+    el.scannerResultText.textContent = "";
+    el.useScannedBusiness.hidden = true;
+    el.scannerStatus.textContent = "Requesting camera access…";
+    el.scannerDialog.hidden = false;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      el.scannerStatus.textContent = "Camera scanning is not supported by this browser. Use QR image upload instead.";
+      return;
+    }
+
+    try {
+      state.scannerStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      el.scannerVideo.srcObject = state.scannerStream;
+      await el.scannerVideo.play();
+      el.scannerStatus.textContent = "Point the camera at a QR code.";
+      scanCameraFrame();
+    } catch (error) {
+      el.scannerStatus.textContent = "Camera access failed. Allow camera permission or use QR image upload.";
+    }
+  }
+
+  function stopScanner() {
+    if (state.scannerTimer) {
+      window.clearTimeout(state.scannerTimer);
+      state.scannerTimer = null;
+    }
+    if (state.scannerStream) {
+      state.scannerStream.getTracks().forEach(function (track) { track.stop(); });
+      state.scannerStream = null;
+    }
+    if (el.scannerVideo) {
+      el.scannerVideo.pause();
+      el.scannerVideo.srcObject = null;
+    }
+  }
+
+  function closeScanner() {
+    stopScanner();
+    el.scannerDialog.hidden = true;
+  }
+
+  async function scanCameraFrame() {
+    if (!state.scannerStream || el.scannerDialog.hidden) return;
+    try {
+      var value = await decodeVideoFrame(el.scannerVideo);
+      if (value) {
+        handleScannedValue(value.trim());
+        return;
+      }
+    } catch (error) {
+      // Keep scanning; transient frame failures are expected.
+    }
+    state.scannerTimer = window.setTimeout(scanCameraFrame, CAMERA_SCAN_INTERVAL_MS);
+  }
+
+  async function decodeVideoFrame(video) {
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return "";
+
+    if ("BarcodeDetector" in window) {
+      try {
+        if (!decodeVideoFrame.detector) decodeVideoFrame.detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+        var codes = await decodeVideoFrame.detector.detect(video);
+        if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
+      } catch (error) {
+        decodeVideoFrame.detector = null;
+      }
+    }
+
+    if (typeof window.jsQR !== "function") return "";
+    if (!decodeVideoFrame.canvas) {
+      decodeVideoFrame.canvas = document.createElement("canvas");
+      decodeVideoFrame.context = decodeVideoFrame.canvas.getContext("2d", { willReadFrequently: true });
+    }
+
+    var canvas = decodeVideoFrame.canvas;
+    var context = decodeVideoFrame.context;
+    var maxWidth = 900;
+    var scale = Math.min(1, maxWidth / video.videoWidth);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    var pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    var result = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+    return result && result.data ? result.data : "";
+  }
+
+  function handleScannedValue(value) {
+    if (!value || value === state.scannerLastValue) return;
+    state.scannerLastValue = value;
+    stopScanner();
+    el.scannerStatus.textContent = "QR decoded successfully.";
+    el.scannerResult.hidden = false;
+    el.scannerResultText.textContent = value;
+
+    var isUpi = Boolean(QRTools.parseUpiUri(value));
+    if (state.scannerPurpose === "business") {
+      if (isUpi) {
+        acceptBusinessQr(value, "camera");
+        closeScanner();
+      } else {
+        el.scannerStatus.textContent = "QR decoded, but it is not a UPI payment QR. You can copy the decoded content below.";
+      }
+    } else {
+      el.useScannedBusiness.hidden = !isUpi || Boolean(state.business);
+    }
+  }
+
+  function copyScannerResult() {
+    var value = el.scannerResultText.textContent;
+    if (!value) return;
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(value).then(function () { showToast("QR content copied."); }).catch(function () { fallbackCopy(value); });
+    } else {
+      fallbackCopy(value);
+    }
+  }
+
+  function fallbackCopy(value) {
+    var area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); showToast("QR content copied."); } catch (error) { showToast("Copy failed. Select the decoded text manually."); }
+    area.remove();
+  }
+
+  function useGenericScanForBusiness() {
+    var value = el.scannerResultText.textContent;
+    if (!QRTools.parseUpiUri(value)) return;
+    closeScanner();
+    if (!state.business) {
+      acceptBusinessQr(value, "camera");
+      el.setupView.hidden = false;
+    }
   }
 
   function cacheElements() {
@@ -438,14 +727,18 @@
       "decoded-upi", "business-name", "save-business", "merchant-name", "change-business", "total-amount",
       "already-paid", "total-error", "paid-error", "amount-summary", "transaction-content", "no-payment",
       "progress-content", "accounting-content", "qr-count", "qr-list", "math-breakdown", "math-check",
-      "complete-payment", "merchant-details", "toast", "confirm-dialog", "dialog-cancel", "dialog-confirm"
+      "complete-payment", "merchant-details", "toast", "confirm-dialog", "dialog-cancel", "dialog-confirm",
+      "scan-business-qr", "scan-any-qr", "scanner-dialog", "scanner-close", "scanner-video", "scanner-status",
+      "scanner-result", "scanner-result-text", "copy-scan-result", "use-scanned-business"
     ].forEach(function (id) {
       var key = id.replace(/-([a-z])/g, function (_, letter) { return letter.toUpperCase(); });
       el[key] = byId(id);
     });
   }
+
   function wireEvents() {
     el.qrFileInput.addEventListener("change", function (event) { handleQrFile(event.target.files[0]); });
+
     ["dragenter", "dragover"].forEach(function (type) {
       el.uploadDropzone.addEventListener(type, function (event) {
         event.preventDefault();
@@ -458,23 +751,47 @@
         el.uploadDropzone.classList.remove("dragover");
       });
     });
-    el.uploadDropzone.addEventListener("drop", function (event) { handleQrFile(event.dataTransfer.files[0]); });
+    el.uploadDropzone.addEventListener("drop", function (event) {
+      var file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      handleQrFile(file);
+    });
+
     el.saveBusiness.addEventListener("click", saveBusiness);
     el.businessName.addEventListener("keydown", function (event) { if (event.key === "Enter") saveBusiness(); });
-    el.changeBusiness.addEventListener("click", changeBusiness);
+    el.changeBusiness.addEventListener("click", requestChangeBusiness);
+    el.merchantDetails.addEventListener("click", showMerchantDetails);
     el.totalAmount.addEventListener("input", debounceGenerate);
     el.alreadyPaid.addEventListener("input", debounceGenerate);
-    el.completePayment.addEventListener("click", finishPayment);
+    el.completePayment.addEventListener("click", completePayment);
     el.dialogCancel.addEventListener("click", function () { el.confirmDialog.hidden = true; });
-    el.dialogConfirm.addEventListener("click", finishConfirmed);
-    el.merchantDetails.addEventListener("click", merchantDetails);
+    el.dialogConfirm.addEventListener("click", finishPaymentSession);
+
+    el.scanBusinessQr.addEventListener("click", function () { openScanner("business"); });
+    el.scanAnyQr.addEventListener("click", function () { openScanner("generic"); });
+    el.scannerClose.addEventListener("click", closeScanner);
+    el.copyScanResult.addEventListener("click", copyScannerResult);
+    el.useScannedBusiness.addEventListener("click", useGenericScanForBusiness);
+
+    el.scannerDialog.addEventListener("click", function (event) {
+      if (event.target === el.scannerDialog) closeScanner();
+    });
+    window.addEventListener("pagehide", stopScanner);
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden && !el.scannerDialog.hidden) closeScanner();
+    });
   }
+
   function init() {
     cacheElements();
     wireEvents();
     state.business = BusinessStorage.load();
-    if (state.business && QRTools.parseUpiUri(state.business.upiBaseUri)) showDashboard();
-    else showSetup();
+    if (state.business && QRTools.parseUpiUri(state.business.upiBaseUri)) {
+      showDashboard();
+    } else {
+      if (state.business) BusinessStorage.clear();
+      showSetup();
+    }
   }
+
   document.addEventListener("DOMContentLoaded", init);
 }());

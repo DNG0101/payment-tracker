@@ -1,162 +1,202 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0d4c4a">
-    <meta name="description" content="Split UPI payments into easy-to-scan QR codes. Runs locally in your browser.">
-    <title>UPI Splitter</title>
-    <link rel="stylesheet" href="css/style.css">
-  </head>
-  <body>
-    <main class="app-shell">
-      <header class="app-header">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d4c4a">
+  <meta name="description" content="Fast browser-only UPI payment splitter and QR tracker for GitHub Pages.">
+  <title>Payment Tracker</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand-wrap">
         <div class="brand-mark" aria-hidden="true">₹</div>
         <div>
           <p class="eyebrow">LOCAL PAYMENT TOOL</p>
-          <h1>UPI Splitter</h1>
+          <h1>Payment Tracker</h1>
         </div>
-      </header>
+      </div>
+      <button id="scan-any-qr" class="button button-ghost header-scan" type="button">Scan Any QR</button>
+    </header>
 
-      <section id="setup-view" class="panel setup-panel" hidden>
-        <div class="panel-heading">
-          <p class="step-label">ONE-TIME SETUP</p>
-          <h2>Upload Your Business Payment QR</h2>
-          <p class="muted">Your merchant QR stays on this device. We only save the business name and UPI address in this browser.</p>
-        </div>
+    <section id="setup-view" class="panel setup-panel" hidden>
+      <div class="panel-heading">
+        <p class="step-label">ONE-TIME BUSINESS SETUP</p>
+        <h2>Add your business payment QR</h2>
+        <p class="muted">Upload a QR image or scan it live with your camera. Processing stays in this browser.</p>
+      </div>
 
-        <div id="upload-dropzone" class="upload-dropzone">
-          <span class="upload-icon" aria-hidden="true">⌁</span>
-          <strong>Choose a QR image</strong>
-          <span class="muted">PNG, JPG, JPEG or WebP</span>
+      <div class="qr-source-grid">
+        <article id="upload-dropzone" class="source-card upload-dropzone">
+          <span class="source-icon" aria-hidden="true">⇧</span>
+          <strong>Upload QR Image</strong>
+          <span class="muted small">PNG, JPG, JPEG or WebP</span>
           <label class="button button-primary upload-button" for="qr-file-input">Choose image</label>
           <input id="qr-file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-        </div>
-        <p class="privacy-note"><span aria-hidden="true">🔒</span> Your QR image is processed locally in your browser and is not uploaded to a server.</p>
-        <div id="setup-message" class="message" role="alert" hidden></div>
+        </article>
 
-        <div id="business-form" class="business-form" hidden>
-          <div class="decoded-preview">
-            <span class="status-dot" aria-hidden="true"></span>
-            <div>
-              <strong>UPI QR decoded</strong>
-              <p id="decoded-upi" class="mono muted"></p>
-            </div>
-          </div>
-          <label for="business-name">Business Name</label>
-          <input id="business-name" class="text-input" type="text" maxlength="80" autocomplete="organization" placeholder="e.g. My Business">
-          <button id="save-business" class="button button-primary button-wide" type="button">Save business and continue</button>
-        </div>
-      </section>
+        <article class="source-card">
+          <span class="source-icon" aria-hidden="true">⌗</span>
+          <strong>Scan QR with Camera</strong>
+          <span class="muted small">Point the camera at a printed QR or another screen</span>
+          <button id="scan-business-qr" class="button button-primary upload-button" type="button">Start camera scan</button>
+        </article>
+      </div>
 
-      <section id="dashboard-view" hidden>
-        <section class="panel merchant-bar">
+      <p class="privacy-note"><span aria-hidden="true">🔒</span> QR images and camera frames are processed locally and are not uploaded to a server.</p>
+      <div id="setup-message" class="message" role="alert" hidden></div>
+
+      <div id="business-form" class="business-form" hidden>
+        <div class="decoded-preview">
+          <span class="status-dot" aria-hidden="true"></span>
           <div>
-            <p class="eyebrow">BUSINESS</p>
-            <h2 id="merchant-name">—</h2>
-            <p class="muted small">Payments are confirmed manually by the operator.</p>
+            <strong>UPI QR decoded</strong>
+            <p id="decoded-upi" class="mono muted"></p>
           </div>
-          <button id="change-business" class="button button-ghost" type="button">Change Business QR</button>
-        </section>
-
-        <section class="panel amount-panel">
-          <div class="panel-heading compact">
-            <p class="step-label">NEW PAYMENT</p>
-            <h2>Enter the bill amount</h2>
-          </div>
-          <div class="amount-grid">
-            <div class="field-block">
-              <label for="total-amount">Total Amount</label>
-              <div class="currency-input">
-                <span aria-hidden="true">₹</span>
-                <input id="total-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="total-error">
-              </div>
-              <p id="total-error" class="field-error" role="alert" hidden></p>
-            </div>
-            <div class="field-block">
-              <label for="already-paid">Already Paid <span class="muted">(optional)</span></label>
-              <div class="currency-input">
-                <span aria-hidden="true">₹</span>
-                <input id="already-paid" type="text" inputmode="decimal" autocomplete="off" value="0" aria-describedby="paid-error">
-              </div>
-              <p id="paid-error" class="field-error" role="alert" hidden></p>
-            </div>
-          </div>
-          <div id="amount-summary" class="amount-summary" hidden></div>
-        </section>
-
-        <div id="transaction-content" hidden>
-          <section class="summary-grid">
-            <article class="panel summary-card">
-              <p class="eyebrow">PAYMENT PROGRESS</p>
-              <div id="progress-content"></div>
-            </article>
-            <article class="panel summary-card">
-              <p class="eyebrow">ACCOUNTING</p>
-              <div id="accounting-content"></div>
-            </article>
-          </section>
-
-          <section class="panel qr-section">
-            <div class="section-heading">
-              <div>
-                <p class="step-label">SCAN IN ORDER</p>
-                <h2>Payment QR codes</h2>
-              </div>
-              <span id="qr-count" class="count-badge"></span>
-            </div>
-            <p class="muted section-help">Each QR has its amount built in. Mark a payment as paid only after you confirm it with the customer.</p>
-            <div id="qr-list" class="qr-grid"></div>
-          </section>
-
-          <section class="panel math-panel">
-            <div class="section-heading">
-              <div>
-                <p class="step-label">CHECK YOUR TOTAL</p>
-                <h2>Mathematical verification</h2>
-              </div>
-              <span id="math-check" class="check-pill"></span>
-            </div>
-            <div id="math-breakdown"></div>
-          </section>
-
-          <section class="complete-panel">
-            <div>
-              <h2>Finished collecting?</h2>
-              <p id="complete-help" class="muted">This clears only the current payment session. Your business setup stays saved.</p>
-            </div>
-            <button id="complete-payment" class="button button-primary" type="button">Payment Completed</button>
-          </section>
         </div>
-        <div id="no-payment" class="panel empty-state">
-          <div class="empty-icon" aria-hidden="true">₹</div>
-          <h2>Ready for the next customer</h2>
-          <p class="muted">Enter a total amount above. Payment QR codes will appear automatically.</p>
+        <label for="business-name">Business Name</label>
+        <input id="business-name" class="text-input" type="text" maxlength="80" autocomplete="organization" placeholder="e.g. My Business">
+        <button id="save-business" class="button button-primary button-wide" type="button">Save business and continue</button>
+      </div>
+    </section>
+
+    <section id="dashboard-view" hidden>
+      <section class="panel merchant-bar">
+        <div>
+          <p class="eyebrow">BUSINESS</p>
+          <h2 id="merchant-name">—</h2>
+          <p class="muted small">Payments are confirmed manually by the operator.</p>
         </div>
+        <button id="change-business" class="button button-ghost" type="button">Change Business QR</button>
       </section>
 
-      <footer class="app-footer">
-        <span>Runs entirely in your browser</span>
-        <button id="merchant-details" class="text-button" type="button" hidden>View Merchant Details</button>
-      </footer>
-    </main>
+      <section class="panel amount-panel">
+        <div class="panel-heading compact">
+          <p class="step-label">NEW PAYMENT</p>
+          <h2>Enter the bill amount</h2>
+        </div>
+        <div class="amount-grid">
+          <div class="field-block">
+            <label for="total-amount">Total Amount</label>
+            <div class="currency-input">
+              <span aria-hidden="true">₹</span>
+              <input id="total-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="total-error">
+            </div>
+            <p id="total-error" class="field-error" role="alert" hidden></p>
+          </div>
+          <div class="field-block">
+            <label for="already-paid">Already Paid <span class="muted">(optional)</span></label>
+            <div class="currency-input">
+              <span aria-hidden="true">₹</span>
+              <input id="already-paid" type="text" inputmode="decimal" autocomplete="off" value="0" aria-describedby="paid-error">
+            </div>
+            <p id="paid-error" class="field-error" role="alert" hidden></p>
+          </div>
+        </div>
+        <div id="amount-summary" class="amount-summary" hidden></div>
+      </section>
 
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <div id="confirm-dialog" class="dialog-backdrop" role="presentation" hidden>
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-        <h2 id="dialog-title">Finish this payment session?</h2>
-        <p id="dialog-copy" class="muted">Some QR payments are not marked Paid. Finish this payment session anyway?</p>
-        <div class="dialog-actions">
-          <button id="dialog-cancel" class="button button-ghost" type="button">Cancel</button>
-          <button id="dialog-confirm" class="button button-primary" type="button">Complete Anyway</button>
+      <div id="transaction-content" hidden>
+        <section class="summary-grid">
+          <article class="panel summary-card">
+            <p class="eyebrow">PAYMENT PROGRESS</p>
+            <div id="progress-content"></div>
+          </article>
+          <article class="panel summary-card">
+            <p class="eyebrow">ACCOUNTING</p>
+            <div id="accounting-content"></div>
+          </article>
+        </section>
+
+        <section class="panel qr-section">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">SCAN IN ORDER</p>
+              <h2>Payment QR codes</h2>
+            </div>
+            <span id="qr-count" class="count-badge"></span>
+          </div>
+          <p class="muted section-help">Each QR contains its exact payment amount. The customer should scan it directly from a UPI app camera. Gallery-import QR behavior differs by UPI app.</p>
+          <div id="qr-list" class="qr-grid"></div>
+        </section>
+
+        <section class="panel math-panel">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">CHECK YOUR TOTAL</p>
+              <h2>Mathematical verification</h2>
+            </div>
+            <span id="math-check" class="check-pill"></span>
+          </div>
+          <div id="math-breakdown"></div>
+        </section>
+
+        <section class="complete-panel">
+          <div>
+            <h2>Finished collecting?</h2>
+            <p class="muted">This clears only the current payment session. Your business setup remains saved.</p>
+          </div>
+          <button id="complete-payment" class="button button-primary" type="button">Payment Completed</button>
+        </section>
+      </div>
+
+      <div id="no-payment" class="panel empty-state">
+        <div class="empty-icon" aria-hidden="true">₹</div>
+        <h2>Ready for the next customer</h2>
+        <p class="muted">Enter a total amount above. Payment QR codes will appear automatically.</p>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      <span>Runs entirely in your browser</span>
+      <button id="merchant-details" class="text-button" type="button" hidden>View Merchant Details</button>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <div id="confirm-dialog" class="dialog-backdrop" role="presentation" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <h2 id="dialog-title">Finish this payment session?</h2>
+      <p id="dialog-copy" class="muted">Some QR payments are not marked Paid. Finish this payment session anyway?</p>
+      <div class="dialog-actions">
+        <button id="dialog-cancel" class="button button-ghost" type="button">Cancel</button>
+        <button id="dialog-confirm" class="button button-primary" type="button">Complete Anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="scanner-dialog" class="dialog-backdrop" role="presentation" hidden>
+    <div class="dialog scanner-dialog" role="dialog" aria-modal="true" aria-labelledby="scanner-title">
+      <div class="scanner-heading">
+        <div>
+          <p class="step-label">LIVE QR SCANNER</p>
+          <h2 id="scanner-title">Scan a QR code</h2>
+        </div>
+        <button id="scanner-close" class="icon-button" type="button" aria-label="Close scanner">×</button>
+      </div>
+      <div class="camera-stage">
+        <video id="scanner-video" playsinline muted></video>
+        <div class="scan-guide" aria-hidden="true"></div>
+      </div>
+      <p id="scanner-status" class="muted scanner-status" aria-live="polite">Camera is starting…</p>
+      <div id="scanner-result" class="scanner-result" hidden>
+        <strong>Decoded QR content</strong>
+        <p id="scanner-result-text" class="mono"></p>
+        <div class="scanner-actions">
+          <button id="copy-scan-result" class="button button-ghost" type="button">Copy result</button>
+          <button id="use-scanned-business" class="button button-primary" type="button" hidden>Use as Business QR</button>
         </div>
       </div>
     </div>
+  </div>
 
-    <script src="vendor/jsQR.js"></script>
-    <script src="vendor/qrcode-generator.js"></script>
-    <script src="js/storage.js"></script>
-    <script src="js/qr.js"></script>
-    <script src="js/app.js"></script>
-  </body>
+  <script src="vendor/jsQR.js"></script>
+  <script src="vendor/qrcode-generator.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/qr.js"></script>
+  <script src="js/app.js"></script>
+</body>
 </html>

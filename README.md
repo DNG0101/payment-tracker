@@ -1,88 +1,67 @@
-# UPI Splitter
+# Payment Tracker
 
-A fast, privacy-friendly UPI payment splitter that runs entirely in the browser and can be deployed directly to GitHub Pages.
+A fast, browser-only UPI payment splitter and manual payment tracker designed to run directly on GitHub Pages.
+
+## Live app
+
+`https://dng0101.github.io/payment-tracker/`
 
 ## What it does
 
-- Reads an existing merchant UPI QR image locally.
-- Saves only the business name and validated UPI payment URI in `localStorage`.
-- Splits a bill into payment QRs capped at ₹1,999 each.
-- Keeps money calculations in integer paise.
-- Lets the operator edit unpaid QR amounts while preserving the total.
-- Locks manually confirmed paid QR amounts.
-- Shows payment progress and a school-style total verification.
-- Clears the transaction on completion and on every browser refresh, while retaining the business setup.
+- Add a merchant UPI QR by **uploading an image** or **scanning it live with the camera**.
+- Includes a **Scan Any QR** utility that can decode general QR content locally in the browser.
+- Stores only the business name and base UPI URI in `localStorage`.
+- Keeps the current payment session in memory only, so refresh clears the transaction but retains the business setup.
+- Accepts a total amount plus an optional already-paid amount.
+- Splits the remaining amount into payment QRs using a default maximum of ₹1,999 per QR.
+- Embeds the exact amount in every generated UPI QR.
+- Lets an operator edit an unpaid QR amount and automatically redistributes the difference while preserving the total.
+- Locks paid QR amounts and tracks paid/pending totals.
+- Shows a school-style addition/subtraction check so the QR amounts visibly add up to the remaining amount.
+- Works on mobile and desktop.
 
-This app does **not** verify payments with a bank or UPI provider. “Mark as Paid” is an operator confirmation.
+## Direct-scan note
 
-## Architecture
+Generated payment QRs are intended to be scanned directly with the camera/QR scanner inside a UPI app. Gallery-import QR behavior varies across UPI apps and is not relied on by this project.
 
-This is a static site:
+## Privacy
 
-```text
-index.html
-css/style.css
-js/app.js
-js/qr.js
-js/storage.js
-vendor/jsQR.js
-vendor/qrcode-generator.js
-```
+QR images, camera frames, UPI data and transaction calculations are processed locally in the browser. There is no backend and no database.
 
-There is no server, database, framework, analytics, payment API, or build step. `jsQR` is the local fallback decoder and `qrcode-generator` creates payment QR images locally. Native `BarcodeDetector` is used first where the browser supports it.
+## GitHub Pages architecture
 
-## Deploy to GitHub Pages
+The project uses plain HTML, CSS and JavaScript plus locally bundled QR libraries. Core functionality does not require a backend or external API.
 
-1. Create a GitHub repository.
-2. Upload the contents of this folder to the repository root.
-3. In **Settings → Pages**, choose **Deploy from a branch**, select the default branch and `/ (root)`.
-4. Open the generated `https://USERNAME.github.io/REPOSITORY/` URL.
+## Main files
 
-The site uses relative asset paths, so it works from a repository subpath.
+- `index.html` — UI and dialogs
+- `css/style.css` — responsive styling
+- `js/storage.js` — persistent business configuration only
+- `js/qr.js` — UPI parsing, QR image decoding and QR generation
+- `js/app.js` — transaction logic, splitting, redistribution, status tracking and camera scanner
 
-## Privacy and storage
+## Amount logic
 
-The uploaded QR image is decoded in memory and is never uploaded. The only persistent data is:
+Money is represented internally as integer paise to avoid floating-point rounding issues.
 
-```js
-{
-  businessName: "...",
-  upiBaseUri: "upi://pay?..."
-}
-```
-
-Bill totals, already-paid values, generated QRs, edits and paid states are runtime-only. A refresh removes them. Use **Change Business QR** to intentionally remove the saved business configuration.
-
-## QR splitting and editing
-
-The default cap is defined once in `js/app.js`:
+Default maximum per generated QR:
 
 ```js
 var MAX_QR_AMOUNT_PAISE = 199900;
 ```
 
-Money is represented as paise, so ₹1,999 is `199900`. The initial split fills QRs up to the cap and puts the remainder in the final QR. Editing an unpaid QR takes the difference from or adds it to other unpaid QR cards, starting at the end; overflow creates additional capped QRs. Paid cards are never changed by redistribution.
+Example:
 
-Every generated URI preserves the decoded UPI parameters, replaces `am`, and sets `cu=INR`.
+```text
+₹6000 => ₹1999 + ₹1999 + ₹1999 + ₹3
+```
 
-## Browser compatibility
+If an individual unpaid amount is edited, the difference is redistributed across other unpaid QRs without changing the overall remaining total. Paid QR amounts are never modified silently.
 
-Current Chrome, Edge, Android Chrome, Firefox, and Safari/iOS are supported as far as their image and canvas APIs allow. Browsers without `BarcodeDetector` automatically use the bundled `jsQR` decoder.
+## Browser requirements
 
-## Manual test checklist
+Live camera scanning uses `getUserMedia`, which works on HTTPS pages such as GitHub Pages. Where `BarcodeDetector` is available it is used first; otherwise the scanner falls back to the locally bundled `jsQR` decoder.
 
-After setup with a valid UPI QR, try:
+## Payment verification
 
-- ₹1 → one QR
-- ₹1,999 → one QR
-- ₹2,000 → ₹1,999 + ₹1
-- ₹3,000 → ₹1,999 + ₹1,001
-- ₹3,998 → ₹1,999 + ₹1,999
-- ₹3,999 → ₹1,999 + ₹1,999 + ₹1
-- ₹6,000 → ₹1,999 + ₹1,999 + ₹1,999 + ₹3
-- ₹6,000 with ₹1,500 already paid → ₹1,999 + ₹1,999 + ₹502
-- Edit the first ₹1,999 on a ₹6,000 bill to ₹1,500 → final QR becomes ₹502
-- Mark a card paid and verify its editor locks
-- Refresh during a transaction and verify the business remains while the transaction disappears
-
-The project intentionally has no build process: open `index.html` through a static host (GitHub Pages is recommended).
+The **Mark as Paid** action is manual operator tracking. This project does not connect to a bank or PSP callback and does not claim automatic bank verification.
